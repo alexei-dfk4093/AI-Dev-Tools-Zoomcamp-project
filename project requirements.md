@@ -58,17 +58,28 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    prefetch persisted 60 articles, enrichment ran, feed served through nginx
    (200 OK, 20 articles), SPA shell served at :8080.
 8. **Deployment (2 pts)** — Publish a working deployment or clear demo.
-   **Not started:** approach not chosen yet (hosted platform vs. container
-   images published to GHCR).
+   **Done:** verified 2026-11-12 — the development deployment workflow
+   publishes backend and frontend images to GHCR on every push to `main`
+   (`ghcr.io/alexei-dfk4093/ecomind-{backend,frontend}:main`, pinned commit
+   SHA tags too); `docker-compose.ghcr.yml` runs the published images with
+   one command (`docker compose -f docker-compose.ghcr.yml up -d`), and the
+   README documents it. First publish verified: run
+   [#43242692141](https://github.com/alexei-dfk4093/AI-Dev-Tools-Zoomcamp-project/actions/runs/43242692141)
+   — test gate passed, both `docker/build-push-action` steps succeeded.
 9. **CI/CD (up to 3 pts)** — Run tests on pull requests, deploy automatically
-   to development, and gate production deployment manually. **Implemented
-   2026-11-12, first run pending push:** `.github/workflows/tests.yml`
-   (backend pytest + frontend vitest + production build on PRs and pushes,
-   reusable as the deploy gate), `deploy-development.yml` (push to `main` →
-   test gate → publish backend/frontend images to GHCR `:main` + commit SHA
-   tags), `deploy-production.yml` (manual `workflow_dispatch` with confirm
-   input + `production` environment gate → `:prod` tags). YAML validated
-   locally; workflow runs can only be verified after the next push to GitHub.
+   to development, and gate production deployment manually. **Done:**
+   verified 2026-11-12 — `.github/workflows/tests.yml` runs backend pytest +
+   frontend vitest + production build on PRs and pushes (reusable deploy
+   gate); `deploy-development.yml` gates GHCR publishing on the test suite
+   for every push to `main`; `deploy-production.yml` is a manual
+   `workflow_dispatch` with a confirm input and the `production` environment
+   gate. First runs (commit 7482cbc): Tests
+   [#43242692064](https://github.com/alexei-dfk4093/AI-Dev-Tools-Zoomcamp-project/actions/runs/43242692064)
+   and Development deployment
+   [#43242692141](https://github.com/alexei-dfk4093/AI-Dev-Tools-Zoomcamp-project/actions/runs/43242692141)
+   both green (an initial failure exposed a CI-only startup-config gap in
+   the tests, fixed by giving the suite a deterministic environment instead
+   of relying on a developer's `.env`).
 10. **Observability (2 pts)** — Provide a UI for correlated logs, metrics,
     and traces for a user journey, without sensitive data. **Partial:** logs
     exist; correlated telemetry and UI do not.
@@ -79,5 +90,6 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
     started.**
 
 **Order:** 1–6, then 7–8, then 9–12. Record brief verification evidence here
-as each objective is completed. Current score: **14/24 verified**
-(objectives 1–7; CI/CD implemented but awaiting its first GitHub Actions run).
+as each objective is completed. Current score: **19/24 verified**
+(objectives 1–9; remaining: observability, user-impact alerts, on-call
+agent).
