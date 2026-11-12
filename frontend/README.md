@@ -28,6 +28,10 @@ npm install
 npm run dev
 ```
 
+Or start the backend, storage, and frontend together with one command from
+the project root: `.\start.ps1` (see the root
+[README](../README.md#run-locally)).
+
 The Vite dev server proxies `/api` requests to the FastAPI backend
 (`http://127.0.0.1:8000`), which must be running with a configured `.env`
 (see `../backend/README.md` and `../.env.example`).
@@ -39,3 +43,6 @@ npm run lint     # oxlint
 npm run test     # vitest unit tests (src/*.test.ts)
 npm run build    # tsc -b && vite build
 ```
+
+`.\run-tests.ps1` from the project root runs the frontend suite together
+with the backend suite.

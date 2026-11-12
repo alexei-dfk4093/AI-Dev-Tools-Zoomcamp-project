@@ -1,0 +1,37 @@
+# EcoMind full stack: FastAPI backend + nginx-served frontend.
+#
+#   docker compose up --build
+#   Frontend:  http://localhost:8080
+#   API docs:  http://localhost:8000/docs
+#
+# Configuration comes from the repository-root .env file when present
+# (copy .env.example). Without keys the app still runs: it serves
+# publisher descriptions and explicit configuration errors instead of
+# AI output. The SQLite database persists in the "backend-data" volume.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - backend-data:/app/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  backend-data:

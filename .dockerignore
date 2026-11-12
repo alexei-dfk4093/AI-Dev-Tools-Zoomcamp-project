@@ -1,0 +1,18 @@
+# Keep build context small and secrets out of images. Both Dockerfiles use
+# the repository root as their build context.
+.git
+.gitignore
+.venv
+.env
+.env.example
+*.db
+data/
+backend/data/
+backend/tests/
+**/__pycache__/
+**/.pytest_cache/
+**/node_modules/
+**/dist/
+docs/
+*.md
+!README.md

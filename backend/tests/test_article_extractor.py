@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -199,3 +200,138 @@ async def test_fetch_article_texts_returns_bodies_for_reachable_pages(monkeypatc
 
 async def _allow_all(client, host):  # noqa: ANN001 - test double
     return None
+
+
+@pytest.mark.anyio
+async def test_robots_redirect_is_not_followed_and_failure_is_cached(monkeypatch) -> None:
+    """A redirecting robots.txt costs one request and is not retried per article."""
+    body = (
+        "A full article body that is comfortably longer than the minimum "
+        "length required to be treated as the extracted body of this story, "
+        "with enough detail for the summarizer to work from and to cite the "
+        "reported figures rather than only the headline."
+    )
+    requested: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, url: str, status_code: int = 200) -> None:
+            self.url = url
+            self.status_code = status_code
+            self.headers = {"content-type": "text/html; charset=utf-8"}
+
+        @property
+        def text(self) -> str:
+            return (
+                "<html><head><script type='application/ld+json'>"
+                + json.dumps({"@type": "NewsArticle", "articleBody": body})
+                + "</script></head><body>"
+                + PADDING
+                + "</body></html>"
+            )
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, url: str, **kwargs):
+            requested.append(url)
+            if url.endswith("/robots.txt"):
+                assert kwargs.get("follow_redirects") is False
+                return FakeResponse(url, status_code=301)
+            return FakeResponse(url)
+
+    monkeypatch.setattr(article_extractor.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(article_extractor, "_robot_cache", {})
+    monkeypatch.setattr(article_extractor, "_robot_locks", {})
+
+    urls = [f"https://looping.example/story-{index}" for index in range(3)]
+    results = await article_extractor.fetch_article_texts(urls)
+
+    # No rules were obtained, so pages are still fetched — but robots.txt was
+    # requested exactly once, without following the redirect.
+    robots_requests = [url for url in requested if url.endswith("/robots.txt")]
+    assert len(results) == 3
+    assert len(robots_requests) == 1
+    assert all(not url.endswith("robots.txt/") for url in requested)
+
+    # A second cycle within the retry window does not re-request robots.txt.
+    await article_extractor.fetch_article_texts(urls)
+    assert len([url for url in requested if url.endswith("/robots.txt")]) == 1
+
+
+@pytest.mark.anyio
+async def test_concurrent_workers_share_one_robots_request(monkeypatch) -> None:
+    """Workers for the same host do not stampede robots.txt concurrently."""
+    robots_calls = 0
+    robots_gate = asyncio.Event()
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+        def __init__(self, url: str) -> None:
+            self.url = url
+
+        @property
+        def text(self) -> str:
+            if self.url.endswith("/robots.txt"):
+                return "User-agent: *\nAllow: /\n"
+            sentence = (
+                "The central bank held its policy rate steady and explained "
+                "its reasoning to reporters after the meeting ended today. "
+            )
+            return "<html><body><p>" + sentence * 6 + "</p></body></html>"
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, url: str, **kwargs):
+            nonlocal robots_calls
+            if url.endswith("/robots.txt"):
+                robots_calls += 1
+                # Hold the fetch open so concurrent workers pile up on it.
+                await asyncio.wait_for(robots_gate.wait(), timeout=2)
+                return FakeResponse(url)
+            return FakeResponse(url)
+
+    class SlowStartClient(FakeAsyncClient):
+        pass
+
+    monkeypatch.setattr(article_extractor.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(article_extractor, "_robot_cache", {})
+    monkeypatch.setattr(article_extractor, "_robot_locks", {})
+
+    original_get = FakeAsyncClient.get
+
+    # Start both workers, then release the robots fetch so they overlap.
+    async def opener() -> None:
+        await asyncio.sleep(0.05)
+        robots_gate.set()
+
+    async def counting_get(self, url, **kwargs):
+        return await original_get(self, url, **kwargs)
+
+    monkeypatch.setattr(FakeAsyncClient, "get", counting_get)
+    gate_task = asyncio.create_task(opener())
+
+    results = await article_extractor.fetch_article_texts(
+        ["https://shared.example/one", "https://shared.example/two"],
+        concurrency=2,
+    )
+    await gate_task
+
+    assert len(results) == 2
+    assert robots_calls == 1

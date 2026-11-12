@@ -1,5 +1,7 @@
+import asyncio
 import json
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -242,7 +244,12 @@ async def test_stale_ai_summaries_are_regenerated_with_the_current_prompt(
     )
 
     articles = await get_or_fetch_articles(settings, limit=1)
+    # The regeneration runs in the background; the first response returns the
+    # stored summary without waiting for it.
+    assert summarized_ids == []
+    await news_service.drain_background_tasks()
     cached = news_repository.get_article("stale-ai-story")
+    articles = await get_or_fetch_articles(settings, limit=1)
 
     assert summarized_ids == ["stale-ai-story"]
     assert articles[0].summary == refreshed_summary
@@ -661,10 +668,11 @@ async def test_article_insights_reject_an_invalid_impact_direction(
         await build_article_insights(settings, article)
 
 
-def test_news_feed_generates_and_caches_ai_summary_for_existing_articles(
+def test_news_feed_returns_at_once_and_caches_background_ai_summary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    """A read never waits for AI work: the summary lands on a later read."""
     monkeypatch.setenv("NEWS_API_KEY", "summary-test-key")
     db_file = tmp_path / "cached-summary.db"
     monkeypatch.setattr(news_repository, "DEFAULT_DB_PATH", db_file)
@@ -677,8 +685,8 @@ def test_news_feed_generates_and_caches_ai_summary_for_existing_articles(
                 published_at="2026-11-10T10:00:00Z",
                 url="https://example.com/cached-story",
                 title="Central bank holds interest rates",
-                summary="The publisher's short description.",
-                summary_source="publisher",
+                summary=None,
+                summary_source="unavailable",
                 importance="important",
             )
         ]
@@ -705,16 +713,27 @@ def test_news_feed_generates_and_caches_ai_summary_for_existing_articles(
 
     try:
         with TestClient(app) as client:
-            response = client.get("/api/v1/news?limit=1")
+            first = client.get("/api/v1/news?limit=1")
+            assert first.status_code == 200
+            # The response is served from storage before any AI work runs.
+            assert first.json()[0]["summary"] is None
+
+            deadline = time.monotonic() + 5
+            summary_source = ""
+            while time.monotonic() < deadline:
+                body = client.get("/api/v1/news?limit=1").json()[0]
+                summary_source = body["summary_source"]
+                if summary_source == "ai":
+                    break
+                time.sleep(0.05)
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 200
-    assert response.json()[0]["summary_source"] == "ai"
-    assert "central bank kept" in response.json()[0]["summary"]
+    assert summary_source == "ai"
     cached = news_repository.get_article("cached-story")
     assert cached is not None
     assert cached.summary_source == "ai"
+    assert "central bank kept" in cached.summary
 
 
 @pytest.mark.anyio
@@ -1376,3 +1395,220 @@ async def test_article_with_a_body_is_summarized_without_web_tools(
 
     assert "kept its policy rate unchanged" in summaries["stored-story"]
     assert "tools" not in observed_request
+
+
+@pytest.mark.anyio
+async def test_publisher_summaries_are_served_without_new_provider_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A publisher summary is final; feed reads never re-summarize it."""
+    db_file = tmp_path / "publisher-final.db"
+    monkeypatch.setattr(news_repository, "DEFAULT_DB_PATH", db_file)
+    news_repository.init_db()
+    news_repository.save_articles(
+        [
+            NewsArticle(
+                id="publisher-story",
+                source="Example News",
+                published_at="2026-11-10T10:00:00Z",
+                url="https://example.com/publisher-story",
+                title="Central bank holds interest rates",
+                summary="The publisher's own description.",
+                summary_source="publisher",
+                importance="important",
+            )
+        ]
+    )
+    summarized_ids: list[str] = []
+
+    async def fake_summarize_articles(settings, articles):
+        summarized_ids.extend(article.id for article in articles)
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.news_service.summarize_articles",
+        fake_summarize_articles,
+    )
+    settings = Settings(
+        news_api_key="test-news-key",
+        openrouter_api_key="test-openrouter-key",
+        openrouter_model="test-model",
+    )
+
+    articles = await get_or_fetch_articles(settings, limit=1)
+    await news_service.drain_background_tasks()
+    articles = await get_or_fetch_articles(settings, limit=1)
+
+    assert summarized_ids == []
+    assert articles[0].summary == "The publisher's own description."
+    assert articles[0].summary_source == "publisher"
+
+
+@pytest.mark.anyio
+async def test_feed_read_returns_while_summaries_regenerate_in_background(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """The feed response must not wait on AI summarization."""
+    db_file = tmp_path / "nonblocking.db"
+    monkeypatch.setattr(news_repository, "DEFAULT_DB_PATH", db_file)
+    news_repository.init_db()
+    news_repository.save_articles(
+        [
+            NewsArticle(
+                id="slow-summary-story",
+                source="Example News",
+                published_at="2026-11-10T10:00:00Z",
+                url="https://example.com/slow-summary-story",
+                title="Central bank holds interest rates",
+                summary=None,
+                summary_source="unavailable",
+                importance="important",
+            )
+        ]
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_summarize_articles(settings, articles):
+        started.set()
+        await release.wait()
+        return {"slow-summary-story": "An AI summary written after the read."}
+
+    monkeypatch.setattr(
+        "app.services.news_service.summarize_articles",
+        fake_summarize_articles,
+    )
+    settings = Settings(
+        news_api_key="test-news-key",
+        openrouter_api_key="test-openrouter-key",
+        openrouter_model="test-model",
+    )
+
+    articles = await get_or_fetch_articles(settings, limit=1)
+    assert articles[0].summary is None
+
+    # Give the background task a chance to start; the read above already
+    # returned while the summarization is still blocked.
+    for _ in range(20):
+        if started.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert started.is_set()
+    assert release.is_set() is False
+
+    release.set()
+    await news_service.drain_background_tasks()
+
+    cached = news_repository.get_article("slow-summary-story")
+    assert cached is not None
+    assert cached.summary == "An AI summary written after the read."
+    assert cached.summary_source == "ai"
+
+
+@pytest.mark.anyio
+async def test_failed_summary_attempt_backs_off_before_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A failed AI-summary attempt is not retried on the next feed read."""
+    db_file = tmp_path / "backoff.db"
+    monkeypatch.setattr(news_repository, "DEFAULT_DB_PATH", db_file)
+    news_repository.init_db()
+    news_repository.save_articles(
+        [
+            NewsArticle(
+                id="failing-story",
+                source="Example News",
+                published_at="2026-11-10T10:00:00Z",
+                url="https://example.com/failing-story",
+                title="Central bank holds interest rates",
+                summary=None,
+                summary_source="unavailable",
+                importance="important",
+            )
+        ]
+    )
+    summarized_ids: list[str] = []
+
+    async def fake_summarize_articles(settings, articles):
+        summarized_ids.extend(article.id for article in articles)
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.news_service.summarize_articles",
+        fake_summarize_articles,
+    )
+    settings = Settings(
+        news_api_key="test-news-key",
+        openrouter_api_key="test-openrouter-key",
+        openrouter_model="test-model",
+    )
+
+    await get_or_fetch_articles(settings, limit=1)
+    await news_service.drain_background_tasks()
+    assert summarized_ids == ["failing-story"]
+    assert news_service._summary_retry_at["failing-story"] > time.monotonic()
+
+    await get_or_fetch_articles(settings, limit=1)
+    await news_service.drain_background_tasks()
+    assert summarized_ids == ["failing-story"]  # no second attempt while in backoff
+
+
+@pytest.mark.anyio
+async def test_refresh_records_provider_state_before_background_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """The cache is marked fresh once articles are stored, not after AI work."""
+    db_file = tmp_path / "state-first.db"
+    monkeypatch.setattr(news_repository, "DEFAULT_DB_PATH", db_file)
+    news_repository.init_db()
+    fresh = NewsArticle(
+        id="fresh-story",
+        source="Example News",
+        published_at="2026-11-10T10:00:00Z",
+        url="https://example.com/fresh-story",
+        title="Central bank holds interest rates",
+        summary="Publisher summary.",
+        summary_source="publisher",
+        importance="important",
+    )
+
+    async def fake_fetch_articles(settings, limit=20, category=None, start_page=None):
+        return [fresh]
+
+    enrichment_started = asyncio.Event()
+    release_enrichment = asyncio.Event()
+
+    async def fake_enrich(settings, articles):
+        enrichment_started.set()
+        await release_enrichment.wait()
+        return {}
+
+    monkeypatch.setattr(
+        "app.services.news_service.fetch_articles",
+        fake_fetch_articles,
+    )
+    monkeypatch.setattr(
+        "app.services.news_service.enrich_articles_with_content",
+        fake_enrich,
+    )
+    settings = Settings(
+        news_api_key="test-news-key",
+        openrouter_api_key=None,
+        openrouter_model="test-model",
+    )
+
+    saved = await refresh_articles(settings, limit=10)
+
+    # The refresh returned while enrichment was still blocked, and the cache
+    # is already recorded as fresh so no other read triggers another refresh.
+    assert saved == 1
+    assert news_repository.get_provider_state("newsapi") is not None
+    assert news_service.is_cache_stale(settings) is False
+    assert enrichment_started.is_set() is False
+
+    release_enrichment.set()
+    await news_service.drain_background_tasks()

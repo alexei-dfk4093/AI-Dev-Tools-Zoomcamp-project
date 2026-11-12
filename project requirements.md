@@ -24,18 +24,51 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    READMEs, and the tracker; the duplicated phase list was replaced with a
    pointer to the product spec.
 5. **Working application (2 pts)** — Verify frontend, backend, and persistent
-   storage end to end; provide one-command local startup. **Partial:** all
-   layers exist, but startup currently needs separate commands.
+   storage end to end; provide one-command local startup. **Done:** verified
+   2026-11-11 — `.\start.ps1` from the root starts backend (uvicorn + SQLite),
+   waits for `/health`, starts the Vite frontend, and opens the app;
+   live check: `/health` ok, `/api/v1/news/status` reported 273 persisted
+   articles (provider refresh recorded), feed served with publisher/timestamp,
+   frontend served and `/api` proxied to the backend, free-model list returned.
+   **Feed reliability repaired and re-verified 2026-11-12:** a stale-cache feed
+   read hung 5–7 minutes when AI summaries were missing (inline provider
+   refresh + summarization on the read path). Fixes: provider results and
+   `provider_state` are stored immediately and enrichment/summarization moved
+   to non-blocking single-flight background tasks with retry backoff; summary
+   batches now share the daily AI request budget through `openrouter.py`
+   (a 429 pauses AI calls instead of spiraling); publisher summaries are
+   final and never re-requested; robots.txt is cached per host with a
+   failure TTL and no redirect-following. Live verification: plain feed read
+   200 ms, `refresh=true` returned cached articles during a provider outage,
+   one 429 paused all AI calls (no further provider POSTs in the log).
 6. **Testing (2 pts)** — Add/verify unit and integration tests runnable with
-   one command. **Partial:** test files exist; unified run and integration
-   coverage need verification.
+   one command. **Done:** verified 2026-11-12 — `.\run-tests.ps1` runs backend
+   pytest (79 tests, incl. full-stack `backend/tests/test_integration.py`:
+   provider HTTP → SQLite → API with mocked externals, plus new tests for the
+   non-blocking feed read, summary backoff, publisher-summary finality,
+   provider-state ordering, the shared AI request budget, and robots.txt
+   caching) and frontend vitest (19 tests) in one command, all passing.
 7. **Containerization (2 pts)** — Run the complete application and persistent
-   data with one Docker Compose command. **Not started:** no Docker setup found.
+   data with one Docker Compose command. **Done:** verified 2026-11-12 —
+   `backend/Dockerfile` (python:3.14-slim, SQLite on the `/app/data` volume),
+   `frontend/Dockerfile` (node:26-alpine build → nginx:1.29-alpine with `/api`
+   proxied to the backend), `frontend/nginx.conf`, root `docker-compose.yml`
+   (env from `.env` when present, `backend-data` volume, healthcheck-gated
+   frontend start). `docker compose up --build` verified: backend healthy,
+   prefetch persisted 60 articles, enrichment ran, feed served through nginx
+   (200 OK, 20 articles), SPA shell served at :8080.
 8. **Deployment (2 pts)** — Publish a working deployment or clear demo.
-   **Not started:** no deployment found.
+   **Not started:** approach not chosen yet (hosted platform vs. container
+   images published to GHCR).
 9. **CI/CD (up to 3 pts)** — Run tests on pull requests, deploy automatically
-   to development, and gate production deployment manually. **Not started:**
-   no CI workflow found.
+   to development, and gate production deployment manually. **Implemented
+   2026-11-12, first run pending push:** `.github/workflows/tests.yml`
+   (backend pytest + frontend vitest + production build on PRs and pushes,
+   reusable as the deploy gate), `deploy-development.yml` (push to `main` →
+   test gate → publish backend/frontend images to GHCR `:main` + commit SHA
+   tags), `deploy-production.yml` (manual `workflow_dispatch` with confirm
+   input + `production` environment gate → `:prod` tags). YAML validated
+   locally; workflow runs can only be verified after the next push to GitHub.
 10. **Observability (2 pts)** — Provide a UI for correlated logs, metrics,
     and traces for a user journey, without sensitive data. **Partial:** logs
     exist; correlated telemetry and UI do not.
@@ -46,4 +79,5 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
     started.**
 
 **Order:** 1–6, then 7–8, then 9–12. Record brief verification evidence here
-as each objective is completed. Current score: **8/24 verified**.
+as each objective is completed. Current score: **14/24 verified**
+(objectives 1–7; CI/CD implemented but awaiting its first GitHub Actions run).

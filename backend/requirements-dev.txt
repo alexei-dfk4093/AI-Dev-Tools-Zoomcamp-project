@@ -1,0 +1,4 @@
+# Backend development and CI dependencies. Runtime dependencies live in
+# requirements.txt; this file adds the test tooling on top of them.
+-r requirements.txt
+pytest>=9,<10

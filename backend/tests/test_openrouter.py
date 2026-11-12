@@ -265,3 +265,151 @@ def test_web_tools_build_fetch_and_search_definitions() -> None:
 
     search_only = openrouter.web_tools(fetch_domains=None, allow_search=True)
     assert [tool["type"] for tool in search_only] == ["openrouter:web_search"]
+
+
+@pytest.mark.anyio
+async def test_chat_completion_counts_toward_the_daily_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batch summarization shares the daily request budget with other AI."""
+    calls = 0
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "MockAsyncClient":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, url: str, **kwargs) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={"choices": [{"message": {"content": '{"summaries": []}'}}]},
+            )
+
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", MockAsyncClient)
+    settings = _settings(openrouter_daily_call_budget=2)
+
+    await openrouter.request_chat_completion(
+        settings,
+        model="test-model",
+        messages=[{"role": "user", "content": "summarize"}],
+    )
+    await openrouter.request_chat_completion(
+        settings,
+        model="test-model",
+        messages=[{"role": "user", "content": "summarize"}],
+    )
+
+    with pytest.raises(openrouter.OpenRouterError, match="daily AI request budget"):
+        await openrouter.request_chat_completion(
+            settings,
+            model="test-model",
+            messages=[{"role": "user", "content": "one too many"}],
+        )
+
+    assert calls == 2
+
+
+@pytest.mark.anyio
+async def test_chat_completion_rate_limit_pauses_further_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 from the provider pauses AI calls instead of inviting retries."""
+    calls = 0
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "MockAsyncClient":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, url: str, **kwargs) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                429,
+                request=httpx.Request("POST", url),
+                json={"error": {"message": "Rate limit exceeded"}},
+            )
+
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", MockAsyncClient)
+    settings = _settings()
+
+    with pytest.raises(openrouter.OpenRouterError, match="rate-limiting"):
+        await openrouter.request_chat_completion(
+            settings,
+            model="test-model",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+    assert calls == 1
+
+    with pytest.raises(openrouter.OpenRouterError, match="allowance is temporarily"):
+        await openrouter.request_chat_completion(
+            settings,
+            model="test-model",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+    assert calls == 1  # the paused call never reaches the provider
+
+
+@pytest.mark.anyio
+async def test_summarize_batch_goes_through_the_shared_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Summary batches may not bypass the budget with their own HTTP calls."""
+    from app.schemas.news import NewsArticle
+    from app.services import news_service
+
+    calls = 0
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> "MockAsyncClient":
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, url: str, **kwargs) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                429,
+                request=httpx.Request("POST", url),
+                json={"error": {"message": "Rate limit exceeded"}},
+            )
+
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", MockAsyncClient)
+    settings = _settings()
+    article = NewsArticle(
+        id="batch-story",
+        source="Example News",
+        published_at="2026-11-10T10:00:00Z",
+        url="https://example.com/batch-story",
+        title="Central bank holds interest rates",
+        summary="Publisher summary.",
+        summary_source="publisher",
+        importance="important",
+    )
+
+    summaries = await news_service.summarize_articles(settings, [article])
+    assert summaries == {}
+
+    # The single 429 paused AI calls, so a later batch makes no HTTP request.
+    second = await news_service.summarize_articles(settings, [article])
+    assert second == {}
+    assert calls == 1

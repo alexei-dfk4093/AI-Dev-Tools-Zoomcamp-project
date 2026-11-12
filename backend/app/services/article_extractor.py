@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import urllib.robotparser
 from html import unescape
 from html.parser import HTMLParser
@@ -91,7 +92,13 @@ PAYWALL_MARKERS = (
     "paywall",
 )
 
-_robot_cache: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+# robots.txt rules per host: (parser, failure_expiry). A parsed rules file is
+# cached for the process lifetime; a failed fetch is retried only after the
+# retry deadline, so one broken host cannot stall enrichment cycles.
+_robot_cache: dict[str, tuple[urllib.robotparser.RobotFileParser | None, float | None]] = {}
+# One fetch per host at a time: concurrent workers share a single request.
+_robot_locks: dict[str, asyncio.Lock] = {}
+ROBOT_RETRY_SECONDS = 600.0
 
 
 def _has_content_marker(value: str) -> bool:
@@ -320,27 +327,63 @@ def _robots_allows(url: str, parser: urllib.robotparser.RobotFileParser | None) 
         return True
 
 
+def _cached_robot_parser(host: str) -> urllib.robotparser.RobotFileParser | None:
+    """Return the host's cached rules, honoring the failure-retry deadline."""
+    entry = _robot_cache.get(host)
+    if entry is None:
+        return _miss_marker  # sentinel: not cached
+    parser, failure_expiry = entry
+    if parser is None and failure_expiry is not None and time.monotonic() >= failure_expiry:
+        return _miss_marker  # a failed fetch may be retried now
+    return parser
+
+
+# Distinguishes "no cache entry" from "cached: no rules found" (None).
+_miss_marker = object()
+
+
 async def _load_robots_parser(
     client: httpx.AsyncClient,
     host: str,
 ) -> urllib.robotparser.RobotFileParser | None:
-    """Fetch and cache a host's robots.txt rules."""
-    if host in _robot_cache:
-        return _robot_cache[host]
+    """Fetch and cache a host's robots.txt rules.
 
-    parser = urllib.robotparser.RobotFileParser()
-    parser.set_url(f"https://{host}/robots.txt")
-    try:
-        response = await client.get(f"https://{host}/robots.txt", timeout=8.0)
-        if response.status_code == 200:
-            parser.parse(response.text.splitlines())
-            _robot_cache[host] = parser
-        else:
-            _robot_cache[host] = None
-    except Exception:  # noqa: BLE001 - unreachable robots.txt means no rules
-        _robot_cache[host] = None
+    Only one fetch per host runs at a time, and redirects are not followed:
+    a robots.txt that redirects (often a redirect loop) yields no usable
+    rules, so the request is treated as "no rules" instead of spending a
+    redirect chain on every article.
+    """
+    cached = _cached_robot_parser(host)
+    if cached is not _miss_marker:
+        return cached
 
-    return _robot_cache[host]
+    lock = _robot_locks.setdefault(host, asyncio.Lock())
+    async with lock:
+        cached = _cached_robot_parser(host)
+        if cached is not _miss_marker:
+            return cached
+
+        parser = urllib.robotparser.RobotFileParser()
+        parser.set_url(f"https://{host}/robots.txt")
+        try:
+            response = await client.get(
+                f"https://{host}/robots.txt",
+                timeout=8.0,
+                follow_redirects=False,
+            )
+            if response.status_code == 200:
+                parser.parse(response.text.splitlines())
+                _robot_cache[host] = (parser, None)
+            else:
+                logger.debug("robots.txt returned HTTP %d for %s", response.status_code, host)
+                _robot_cache[host] = (
+                    None,
+                    time.monotonic() + ROBOT_RETRY_SECONDS,
+                )
+        except Exception:  # noqa: BLE001 - unreachable robots.txt means no rules
+            _robot_cache[host] = (None, time.monotonic() + ROBOT_RETRY_SECONDS)
+
+    return _robot_cache[host][0]
 
 
 def _same_article(requested: str, final: str) -> bool:

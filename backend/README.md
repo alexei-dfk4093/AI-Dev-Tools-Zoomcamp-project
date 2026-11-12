@@ -53,6 +53,13 @@ disable `OPENROUTER_WEB_TOOLS_ENABLED` if you need to avoid those tools.
 Start the API from the project root:
 
 ```powershell
+.\start.ps1
+```
+
+This one command also starts the frontend and opens the app; see the root
+[README](../README.md#run-locally). To run the backend alone:
+
+```powershell
 python -m uvicorn app.main:app --app-dir backend --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -61,6 +68,10 @@ Interactive API documentation is available at `http://127.0.0.1:8000/docs`.
 The Vite development server proxies `/api` requests to this API. Start it separately with `npm run dev` from `frontend`.
 
 ## Tests
+
+One command runs the backend and frontend suites together from the project
+root: `.\run-tests.ps1` (see the root [README](../README.md#tests)). The
+backend suite alone:
 
 ```powershell
 python -m pip install -r backend\requirements.txt

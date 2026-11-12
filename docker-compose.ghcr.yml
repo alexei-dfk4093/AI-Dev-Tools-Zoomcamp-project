@@ -1,0 +1,32 @@
+# Run EcoMind from the container images published to GHCR by the
+# development deployment workflow (no local build needed):
+#
+#   docker compose -f docker-compose.ghcr.yml up -d
+#
+# The :main tag follows the latest push to the main branch; pin a commit
+# by replacing "main" with a commit SHA. Configuration comes from the
+# repository-root .env file when present (copy .env.example). The SQLite
+# database persists in the "backend-data" volume.
+services:
+  backend:
+    image: ghcr.io/alexei-dfk4093/ecomind-backend:main
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - backend-data:/app/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/alexei-dfk4093/ecomind-frontend:main
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  backend-data:

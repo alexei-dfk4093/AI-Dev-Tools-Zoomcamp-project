@@ -1,0 +1,46 @@
+# EcoMind test suite: backend pytest + frontend vitest + production build.
+#
+# Runs on every pull request and on pushes to main. Both deploy workflows
+# call this workflow (via workflow_call) as the gate before publishing
+# images. All external APIs are mocked, so the run is deterministic.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements-dev.txt
+      - name: Run backend tests
+        run: pytest backend/tests -q
+
+  frontend:
+    name: Frontend (vitest + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --no-fund --no-audit
+        working-directory: frontend
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend
+      - name: Build production bundle
+        run: npm run build
+        working-directory: frontend

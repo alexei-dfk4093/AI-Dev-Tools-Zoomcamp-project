@@ -77,7 +77,82 @@ item and how it will be checked:
 
 ## Run locally
 
-See [backend setup](backend/README.md) and
-[frontend setup](frontend/README.md) for requirements, configuration, and
-startup instructions. API health and interactive documentation are available
-at `/health` and `/docs` when the backend is running.
+One command starts the complete application — FastAPI backend, SQLite
+persistent storage, and the React frontend:
+
+```powershell
+.\start.ps1
+```
+
+The script creates the Python virtual environment and installs frontend
+dependencies on first run, waits until the API is healthy, then serves the
+app at <http://localhost:5173> (API docs at
+<http://127.0.0.1:8000/docs>). Configuration is read from the project-root
+`.env` file (see [backend setup](backend/README.md)). Press Ctrl+C to stop
+both servers.
+
+To run the same pieces manually instead:
+
+- Backend: see [backend setup](backend/README.md) (`uvicorn` command).
+- Frontend: `npm run dev` from `frontend` (see
+  [frontend setup](frontend/README.md)).
+
+API health and interactive documentation are available at `/health` and
+`/docs` when the backend is running.
+
+## Run with Docker
+
+The full stack runs in containers — backend (FastAPI + SQLite) and frontend
+(nginx-served static build with `/api` proxied to the backend):
+
+```powershell
+docker compose up --build
+```
+
+- Frontend: <http://localhost:8080>
+- API docs: <http://127.0.0.1:8000/docs>
+
+Configuration comes from the project-root `.env` file when present (copy
+`.env.example`); without keys the app runs with publisher descriptions and
+explicit configuration errors instead of AI output. The SQLite database
+persists in the `backend-data` volume across container replacements.
+`docker compose down --volumes` stops and clears the stored data.
+
+### Run the published images
+
+The development deployment workflow publishes ready-to-run images to GHCR on
+every push to `main`. To run EcoMind without building anything:
+
+```powershell
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+This pulls `ghcr.io/alexei-dfk4093/ecomind-backend:main` and
+`ghcr.io/alexei-dfk4093/ecomind-frontend:main` (pin a commit by replacing
+`main` with a commit SHA) and starts the same stack.
+
+## CI/CD
+
+GitHub Actions workflows live in `.github/workflows`:
+
+- **Tests** (`tests.yml`) — backend pytest and frontend vitest plus the
+  production frontend build, on every pull request and push to `main`.
+  The deploy workflows call it as a gate before publishing.
+- **Development deployment** (`deploy-development.yml`) — on every push to
+  `main`, after tests pass, builds and publishes backend and frontend
+  images to GHCR (`ghcr.io/alexei-dfk4093/ecomind-{backend,frontend}:main`).
+- **Production deployment** (`deploy-production.yml`) — manual run from the
+  Actions tab with an explicit confirmation input and the `production`
+  environment gate; publishes `:prod` image tags after tests pass.
+
+## Tests
+
+One command runs the backend and frontend test suites (external APIs are
+mocked, so the run is deterministic):
+
+```powershell
+.\run-tests.ps1
+```
+
+Individual suites: `python -m pytest backend\tests` (backend) and
+`npm run test` from `frontend` (frontend).

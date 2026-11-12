@@ -214,6 +214,10 @@ async def request_assistant_text(
             last_error = error
             if _is_prompt_limit_error(str(error)):
                 continue
+            if exc.response.status_code == 429:
+                # A rate-limit failure means the allowance is gone for now;
+                # pause AI calls so retries cannot burn through the tier.
+                _block_quota(now)
             if (
                 exc.response.status_code == 402
                 and _is_free_tier_quota_error(provider_detail)
@@ -229,6 +233,87 @@ async def request_assistant_text(
         return _parse_responses_output(data)
 
     raise last_error or OpenRouterError("The AI provider returned an invalid response.")
+
+
+async def request_chat_completion(
+    settings,
+    *,
+    model: str,
+    messages: list[dict],
+    temperature: float = 0.2,
+    max_tokens: int = 4000,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+) -> dict:
+    """One chat-completions request through the shared request budget.
+
+    Every provider call must pass through here so the daily budget, the
+    quota pause after a rate-limit failure, and the call counter apply to
+    all AI features, not only the assistant path.
+    """
+    if not settings.openrouter_api_key:
+        raise OpenRouterError("No OpenRouter API key is configured.")
+
+    now = datetime.now(timezone.utc)
+    _budget_state(now)
+    if _quota_is_blocked(now):
+        raise OpenRouterError(
+            "The AI provider's request allowance is temporarily exhausted. "
+            "The app has paused AI calls for the next hour so the remaining "
+            "allowance is not wasted; try again later or add credits to the "
+            "OpenRouter account."
+        )
+    daily_budget = getattr(settings, "openrouter_daily_call_budget", 0)
+    if daily_budget and _daily_calls >= daily_budget:
+        raise OpenRouterError(
+            f"The daily AI request budget of {daily_budget} calls is used up. "
+            "Add credits to the OpenRouter account or raise "
+            "OPENROUTER_DAILY_CALL_BUDGET to continue."
+        )
+
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+        "messages": messages,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                OPENROUTER_API_URL,
+                json=payload,
+                headers=_headers(settings),
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.TimeoutException as exc:
+        raise OpenRouterError("The request to the AI provider timed out.") from exc
+    except httpx.RequestError as exc:
+        raise OpenRouterError("The AI provider could not be reached.") from exc
+    except httpx.HTTPStatusError as exc:
+        provider_detail = _provider_error_detail(exc.response)
+        logger.warning(
+            "OpenRouter request for %s returned HTTP %s",
+            model,
+            exc.response.status_code,
+        )
+        if exc.response.status_code == 429:
+            # A rate-limit failure means the allowance is gone for now;
+            # pause AI calls so retries cannot burn through the tier.
+            _block_quota(now)
+        elif exc.response.status_code == 402 and _is_free_tier_quota_error(
+            provider_detail
+        ):
+            _block_quota(now)
+        raise OpenRouterError(
+            _http_error_message(exc.response.status_code, model, provider_detail)
+        ) from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise OpenRouterError("The AI provider returned an invalid response.") from exc
+
+    _note_call(now)
+    return data
 
 
 def _start_of_day(now: datetime) -> date:
@@ -260,6 +345,11 @@ def reset_request_budget() -> None:
 
 def _quota_is_blocked(now: datetime) -> bool:
     return _quota_blocked_until is not None and now < _quota_blocked_until
+
+
+def quota_is_paused() -> bool:
+    """True while AI calls are paused after a provider quota failure."""
+    return _quota_is_blocked(datetime.now(timezone.utc))
 
 
 def _block_quota(now: datetime, minutes: int = 60) -> None:
