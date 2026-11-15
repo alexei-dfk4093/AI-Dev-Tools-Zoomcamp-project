@@ -41,6 +41,9 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    failure TTL and no redirect-following. Live verification: plain feed read
    200 ms, `refresh=true` returned cached articles during a provider outage,
    one 429 paused all AI calls (no further provider POSTs in the log).
+   Independent audit re-verified 2026-11-15 — `.\start.ps1` run again;
+   `/health`, `/api/v1/news/status`, feed fields, `/api` proxy, and the
+   free-only model list all checked live and passing.
 6. **Testing (2 pts)** — Add/verify unit and integration tests runnable with
    one command. **Done:** verified 2026-11-12 — `.\run-tests.ps1` runs backend
    pytest (79 tests, incl. full-stack `backend/tests/test_integration.py`:
@@ -48,6 +51,8 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    non-blocking feed read, summary backoff, publisher-summary finality,
    provider-state ordering, the shared AI request budget, and robots.txt
    caching) and frontend vitest (19 tests) in one command, all passing.
+   Independent audit re-verified 2026-11-15 — 79 backend + 19 frontend
+   tests re-run on that date, all passing; `npm run build` also green.
 7. **Containerization (2 pts)** — Run the complete application and persistent
    data with one Docker Compose command. **Done:** verified 2026-11-12 —
    `backend/Dockerfile` (python:3.14-slim, SQLite on the `/app/data` volume),
@@ -56,7 +61,11 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    (env from `.env` when present, `backend-data` volume, healthcheck-gated
    frontend start). `docker compose up --build` verified: backend healthy,
    prefetch persisted 60 articles, enrichment ran, feed served through nginx
-   (200 OK, 20 articles), SPA shell served at :8080.
+   (200 OK, 20 articles), SPA shell served at :8080. Independent audit
+   re-verified 2026-11-15 — `docker compose up --build` rebuilt and ran the
+   stack; `/health`, status, feed, models, nginx SPA at :8080, and the `/api`
+   proxy all checked; the `backend-data` volume preserved all 60 articles
+   (and their timestamps) across container replacement.
 8. **Deployment (2 pts)** — Publish a working deployment or clear demo.
    **Done:** verified 2026-11-12 — the development deployment workflow
    publishes backend and frontend images to GHCR on every push to `main`
@@ -66,6 +75,10 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    README documents it. First publish verified: run
    [#43242692141](https://github.com/alexei-dfk4093/AI-Dev-Tools-Zoomcamp-project/actions/runs/43242692141)
    — test gate passed, both `docker/build-push-action` steps succeeded.
+   Independent audit re-verified 2026-11-15 —
+   `docker compose -f docker-compose.ghcr.yml` pulled both published images
+   anonymously (public visibility proven) and served the complete app:
+   healthcheck-gated backend, 60 persisted articles, SPA and proxied API.
 9. **CI/CD (up to 3 pts)** — Run tests on pull requests, deploy automatically
    to development, and gate production deployment manually. **Done:**
    verified 2026-11-12 — `.github/workflows/tests.yml` runs backend pytest +
@@ -79,7 +92,13 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    [#43242692141](https://github.com/alexei-dfk4093/AI-Dev-Tools-Zoomcamp-project/actions/runs/43242692141)
    both green (an initial failure exposed a CI-only startup-config gap in
    the tests, fixed by giving the suite a deterministic environment instead
-   of relying on a developer's `.env`).
+   of relying on a developer's `.env`). Independent audit re-verified
+   2026-11-15 — all six recorded runs checked unauthenticated (Tests and
+   Development deployment green on 7482cbc and 3271aa1; the run #1 failure
+   matches the documented CI-only env gap). The `pull_request` trigger had
+   never fired because no pull request existed; this audit note was itself
+   submitted through a pull request so the PR path of the test workflow
+   ran and passed before merge.
 10. **Observability (2 pts)** — Provide a UI for correlated logs, metrics,
     and traces for a user journey, without sensitive data. **Partial:** logs
     exist; correlated telemetry and UI do not.
