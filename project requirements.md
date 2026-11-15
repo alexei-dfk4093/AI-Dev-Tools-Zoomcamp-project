@@ -13,7 +13,10 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    **Done:** specification in [docs/product-spec.md](docs/product-spec.md);
    tracker is public GitHub Issues (12 objective issues, #3–#14, each with
    work item and check) linked from the README; public access verified via
-   unauthenticated API request.
+   unauthenticated API request. Tracker synced 2026-11-15 — issues #13 and
+   #14 now state their check explicitly, and the nine verified objective
+   issues (#3–#9, #13, #14) carry dated verification comments and are
+   closed as completed; #10 remains Partial, #11–#12 Not started.
 3. **Agent team (2 pts)** — Define agent roles, responsibilities, and
    collaboration process. **Done:** roles, responsibilities, and
    collaboration process documented in [docs/agent-team.md](docs/agent-team.md).
