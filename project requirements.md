@@ -103,15 +103,27 @@ is verified. Scoring follows the Zoomcamp rubric (24 points total).
    submitted through a pull request so the PR path of the test workflow
    ran and passed before merge.
 10. **Observability (2 pts)** — Provide a UI for correlated logs, metrics,
-    and traces for a user journey, without sensitive data. **Partial:** logs
-    exist; correlated telemetry and UI do not.
+    and traces for a user journey, without sensitive data. **Done:** verified
+    — the frontend now serves an observability dashboard at `/observability`
+    that fetches `/api/v1/observability/metrics` and `/journeys`, renders
+    route metrics, recent journeys, and a selected trace detail with spans,
+    logs, and metric samples; no raw credentials are shown. Verified by the
+    frontend App test covering telemetry rendering.
 11. **User-impact alerts (1 pt)** — Configure and safely test at least one
-    actionable alert. **Not started.**
+    actionable alert. **Done:** verified — the backend evaluates recent
+    request telemetry against a configurable error-rate threshold and returns
+    an alert status at `/api/v1/observability/alerts`; the alert stays clear
+    below threshold and becomes active when requests exceed the configured
+    error-rate limit. Verified by `backend/tests/test_alerts.py`.
 12. **On-call agent (2 pts)** — Have an agent investigate alerts and verify
-    fixes, with human approval for production-impacting actions. **Not
-    started.**
+    fixes, with human approval for production-impacting actions. **Done:**
+    verified — `/api/v1/observability/oncall` returns a safe investigation
+    summary with recommended actions and verification steps, and the
+    approval endpoint requires explicit human confirmation before a
+    production-impacting action proceeds. Verified by
+    `backend/tests/test_oncall_agent.py` and the observability dashboard
+    rendering its on-call review card.
 
 **Order:** 1–6, then 7–8, then 9–12. Record brief verification evidence here
-as each objective is completed. Current score: **19/24 verified**
-(objectives 1–9; remaining: observability, user-impact alerts, on-call
-agent).
+as each objective is completed. Current score: **24/24 verified**
+(all objectives complete).

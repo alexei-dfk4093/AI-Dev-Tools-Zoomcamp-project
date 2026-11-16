@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type MouseEvent } from 'react'
 import DiscussionPage from './DiscussionPage'
+import ObservabilityPage from './ObservabilityPage'
 import { readApiResponse } from './api'
 import {
   apiErrorDetail,
@@ -125,6 +126,9 @@ function App() {
   const [isDiscussionPage, setIsDiscussionPage] = useState(
     () => window.location.pathname === '/discussion',
   )
+  const [isObservabilityPage, setIsObservabilityPage] = useState(
+    () => window.location.pathname === '/observability',
+  )
   const [discussionArticle, setDiscussionArticle] = useState<NewsArticle | null>(
     getDiscussionArticle,
   )
@@ -139,7 +143,9 @@ function App() {
   useEffect(() => {
     function syncPageWithLocation() {
       const isDiscussion = window.location.pathname === '/discussion'
+      const isObservability = window.location.pathname === '/observability'
       setIsDiscussionPage(isDiscussion)
+      setIsObservabilityPage(isObservability)
       setDiscussionArticle(isDiscussion ? getDiscussionArticle() : null)
     }
 
@@ -151,7 +157,7 @@ function App() {
     // Keep the already-loaded feed (and scroll position) when returning
     // from a discussion page; fetch only when the feed is empty or the
     // user explicitly asked for a reload.
-    if (isDiscussionPage || articles.length > 0) return
+    if (isDiscussionPage || isObservabilityPage || articles.length > 0) return
 
     const controller = new AbortController()
 
@@ -230,7 +236,7 @@ function App() {
 
   // Keep the visible feed current without a page reload.
   useEffect(() => {
-    if (isDiscussionPage) return
+    if (isDiscussionPage || isObservabilityPage) return
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'hidden') return
@@ -297,10 +303,19 @@ function App() {
     window.scrollTo({ top: 0 })
   }
 
+  function openObservability() {
+    window.history.pushState(null, '', '/observability')
+    setDiscussionArticle(null)
+    setIsDiscussionPage(false)
+    setIsObservabilityPage(true)
+    window.scrollTo({ top: 0 })
+  }
+
   function returnToNews() {
     window.history.replaceState(null, '', '/')
     setDiscussionArticle(null)
     setIsDiscussionPage(false)
+    setIsObservabilityPage(false)
   }
 
   return (
@@ -320,15 +335,28 @@ function App() {
             <h1>EcoMind</h1>
           </div>
         </div>
-        {isDiscussionPage && (
-          <button className="back-to-news" onClick={returnToNews} type="button">
-            ← Back to headlines
-          </button>
-        )}
+        <div className="topbar-actions">
+          {isObservabilityPage ? (
+            <button className="back-to-news" onClick={returnToNews} type="button">
+              ← Back to headlines
+            </button>
+          ) : (
+            <button className="back-to-news" onClick={openObservability} type="button">
+              Observability
+            </button>
+          )}
+          {isDiscussionPage && (
+            <button className="back-to-news" onClick={returnToNews} type="button">
+              ← Back to headlines
+            </button>
+          )}
+        </div>
       </header>
 
       <main className={isDiscussionPage ? 'main-content discussion-main' : 'main-content'}>
-        {isDiscussionPage ? (
+        {isObservabilityPage ? (
+          <ObservabilityPage />
+        ) : isDiscussionPage ? (
           discussionArticle ? (
             <DiscussionPage article={discussionArticle} key={discussionArticle.id} />
           ) : (

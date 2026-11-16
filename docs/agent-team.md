@@ -24,9 +24,8 @@ and the collaboration process between them.
 - **Providers** — deepseek, GLM, and free OpenAI/OpenRouter models.
   Personas are independent of providers: any persona can run over any
   provider without duplicating provider integration code.
-- **On-call agent (planned, Objective 12)** — investigates alerts and
-  verifies fixes, with human approval required for production-impacting
-  actions.
+- **On-call agent** — investigates alerts, verifies fixes, and keeps
+  production-impacting actions behind explicit human approval.
 
 ## 3. Collaboration process
 

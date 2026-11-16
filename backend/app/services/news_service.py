@@ -12,6 +12,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import Settings
+from app.core import telemetry
 from app.repositories import news_repository
 from app.schemas.news import NewsArticle
 from app.services import article_extractor, openrouter
@@ -280,9 +281,16 @@ async def fetch_articles(
     category: str | None = None,
     start_page: int | None = None,
 ) -> list[NewsArticle]:
-    if is_marketaux_key(settings.news_api_key):
-        return await fetch_marketaux_articles(settings, limit, start_page=start_page)
-    return await fetch_newsapi_articles(settings, limit, category=category)
+    provider = provider_name(settings)
+    with telemetry.start_span(
+        "news.provider_fetch",
+        {"provider": provider, "limit": limit},
+        metric_name=telemetry.PROVIDER_FETCH_COUNT,
+        metric_dimensions={"provider": provider},
+    ):
+        if is_marketaux_key(settings.news_api_key):
+            return await fetch_marketaux_articles(settings, limit, start_page=start_page)
+        return await fetch_newsapi_articles(settings, limit, category=category)
 
 
 def provider_name(settings: Settings) -> str:
@@ -314,37 +322,42 @@ async def enrich_articles_with_content(
     if not settings.article_content_fetch_enabled or not articles:
         return {}
 
-    targets = [
-        article
-        for article in articles
-        if not article.article_content or len(article.article_content) < 200
-    ][: settings.article_content_fetch_per_cycle]
+    with telemetry.start_span("news.enrich") as enrich_span:
+        targets = [
+            article
+            for article in articles
+            if not article.article_content or len(article.article_content) < 200
+        ][: settings.article_content_fetch_per_cycle]
 
-    if not targets:
-        return {}
+        if not targets:
+            return {}
 
-    try:
-        texts = await article_extractor.fetch_article_texts(
-            [str(article.url) for article in targets],
-            concurrency=settings.article_content_fetch_concurrency,
-            proxy_base=settings.article_reader_proxy_url,
+        try:
+            texts = await article_extractor.fetch_article_texts(
+                [str(article.url) for article in targets],
+                concurrency=settings.article_content_fetch_concurrency,
+                proxy_base=settings.article_reader_proxy_url,
+            )
+        except Exception as exc:  # noqa: BLE001 - enrichment must never break a refresh
+            logger.warning("Article enrichment failed (non-fatal): %s", exc)
+            return {}
+
+        bodies: dict[str, str] = {}
+        for article in targets:
+            text = texts.get(str(article.url))
+            if not text:
+                continue
+            news_repository.update_article_content(article.id, text)
+            bodies[article.id] = text
+
+        enrich_span.set_attributes(
+            {"targets": len(targets), "stored_bodies": len(bodies)}
         )
-    except Exception as exc:  # noqa: BLE001 - enrichment must never break a refresh
-        logger.warning("Article enrichment failed (non-fatal): %s", exc)
-        return {}
 
-    bodies: dict[str, str] = {}
-    for article in targets:
-        text = texts.get(str(article.url))
-        if not text:
-            continue
-        news_repository.update_article_content(article.id, text)
-        bodies[article.id] = text
+        if bodies:
+            logger.info("Article enrichment stored %d full texts.", len(bodies))
 
-    if bodies:
-        logger.info("Article enrichment stored %d full texts.", len(bodies))
-
-    return bodies
+        return bodies
 
 
 async def refresh_articles(
@@ -373,22 +386,35 @@ async def refresh_articles(
             return 0
         _last_refresh_attempt_at = now
 
-        fresh_articles = await fetch_articles(settings, limit=limit, category=category)
-        known_ids = news_repository.get_existing_article_ids()
-        new_articles = [
-            article for article in fresh_articles if article.id not in known_ids
-        ]
+        with telemetry.start_span(
+            "news.refresh",
+            {
+                "provider": provider_name(settings),
+                "force": force,
+                "limit": limit,
+            },
+        ) as refresh_span:
+            fresh_articles = await fetch_articles(settings, limit=limit, category=category)
+            known_ids = news_repository.get_existing_article_ids()
+            new_articles = [
+                article for article in fresh_articles if article.id not in known_ids
+            ]
 
-        # Store the provider result and mark the cache fresh immediately, so
-        # concurrent feed reads are served from storage while the slower
-        # enrichment and summarization work runs in the background.
-        saved = news_repository.save_articles(new_articles)
-        news_repository.set_provider_state(provider_name(settings))
-        if not new_articles:
-            return 0
+            # Store the provider result and mark the cache fresh immediately, so
+            # concurrent feed reads are served from storage while the slower
+            # enrichment and summarization work runs in the background.
+            saved = news_repository.save_articles(new_articles)
+            news_repository.set_provider_state(provider_name(settings))
+            refresh_span.set_attributes({"fetched": len(fresh_articles), "saved": saved})
+            if saved:
+                telemetry.record_metric(
+                    telemetry.REFRESH_ARTICLES_SAVED, saved, {"provider": provider_name(settings)}
+                )
+            if not new_articles:
+                return 0
 
-        _schedule_article_enrichment(settings, new_articles)
-        return saved
+            _schedule_article_enrichment(settings, new_articles)
+            return saved
 
 
 # Background enrichment and summary regeneration run as single-flight tasks:
@@ -778,36 +804,52 @@ async def summarize_articles(
         logger.warning(
             "AI summaries skipped while the provider quota pause is active"
         )
+        telemetry.record_metric(telemetry.AI_QUOTA_PAUSE_COUNT, 1)
         return {}
 
-    summaries: dict[str, str] = {}
-    with_body: list[NewsArticle] = []
-    without_body: list[NewsArticle] = []
-    for article in articles:
-        if article.article_content and len(article.article_content) >= 200:
-            with_body.append(article)
-        else:
-            without_body.append(article)
+    with telemetry.start_span(
+        "news.summarize",
+        {
+            "with_body": sum(
+                1
+                for article in articles
+                if article.article_content and len(article.article_content) >= 200
+            ),
+            "without_body": sum(
+                1
+                for article in articles
+                if not (article.article_content and len(article.article_content) >= 200)
+            ),
+        },
+    ):
+        summaries: dict[str, str] = {}
+        with_body: list[NewsArticle] = []
+        without_body: list[NewsArticle] = []
+        for article in articles:
+            if article.article_content and len(article.article_content) >= 200:
+                with_body.append(article)
+            else:
+                without_body.append(article)
 
-    for start in range(0, len(with_body), SUMMARIZATION_BATCH_SIZE):
-        batch = with_body[start : start + SUMMARIZATION_BATCH_SIZE]
-        summaries.update(await _summarize_batch(settings, batch))
+        for start in range(0, len(with_body), SUMMARIZATION_BATCH_SIZE):
+            batch = with_body[start : start + SUMMARIZATION_BATCH_SIZE]
+            summaries.update(await _summarize_batch(settings, batch))
 
-    online_allowed = (
-        settings.openrouter_web_tools_enabled and settings.openrouter_api_key
-    )
-    online_budget = SUMMARY_ONLINE_BATCH if online_allowed else 0
+        online_allowed = (
+            settings.openrouter_web_tools_enabled and settings.openrouter_api_key
+        )
+        online_budget = SUMMARY_ONLINE_BATCH if online_allowed else 0
 
-    for article in without_body:
-        if online_budget > 0:
-            online_budget -= 1
-            online_summary = await _summarize_article_online(settings, article)
-            if online_summary:
-                summaries.update(online_summary)
-                continue
-        summaries.update(await _summarize_batch(settings, [article]))
+        for article in without_body:
+            if online_budget > 0:
+                online_budget -= 1
+                online_summary = await _summarize_article_online(settings, article)
+                if online_summary:
+                    summaries.update(online_summary)
+                    continue
+            summaries.update(await _summarize_batch(settings, [article]))
 
-    return summaries
+        return summaries
 
 
 ONLINE_SUMMARY_INSTRUCTIONS = (

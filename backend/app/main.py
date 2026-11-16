@@ -8,7 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.discussions import router as discussions_router
 from app.api.routes.news import router as news_router
+from app.api.routes.observability import router as observability_router
 from app.core.config import get_settings
+from app.core import telemetry
+from app.middleware.observability import ObservabilityMiddleware
 from app.repositories import news_repository
 from app.repositories.news_repository import init_db
 
@@ -79,6 +82,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning(
             "OPENROUTER_API_KEY is not configured; publisher descriptions will be used."
         )
+    if settings.telemetry_enabled:
+        telemetry.setup()
     # Keep a reference so the fire-and-forget warmup task is not garbage collected.
     app.state.prefetch_task = asyncio.create_task(_prefetch_news(settings))
     app.state.refresh_task = asyncio.create_task(
@@ -112,6 +117,7 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+app.add_middleware(ObservabilityMiddleware)
 
 
 @app.get("/health", tags=["health"])
@@ -124,4 +130,9 @@ app.include_router(
     discussions_router,
     prefix="/api/v1/discussions",
     tags=["discussions"],
+)
+app.include_router(
+    observability_router,
+    prefix="/api/v1/observability",
+    tags=["observability"],
 )

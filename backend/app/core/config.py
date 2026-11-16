@@ -61,6 +61,9 @@ class Settings:
     article_reader_proxy_url: str = ""
     openrouter_web_tools_enabled: bool = True
     openrouter_daily_call_budget: int = DEFAULT_OPENROUTER_DAILY_CALL_BUDGET
+    telemetry_enabled: bool = True
+    alert_error_rate_threshold: float = 0.2
+    alert_min_requests: int = 25
 
 
 def get_settings() -> Settings:
@@ -100,6 +103,12 @@ def get_settings() -> Settings:
         "OPENROUTER_DAILY_CALL_BUDGET",
         DEFAULT_OPENROUTER_DAILY_CALL_BUDGET,
     )
+    telemetry_enabled = _read_bool("TELEMETRY_ENABLED", default=True)
+    alert_error_rate_threshold = _read_float(
+        "ALERT_ERROR_RATE_THRESHOLD",
+        0.2,
+    )
+    alert_min_requests = _read_int("ALERT_MIN_REQUESTS", 25)
     configured_models = os.getenv("OPENROUTER_MODELS", "").strip()
     configured_openrouter_models = tuple(
         dict.fromkeys(
@@ -140,6 +149,9 @@ def get_settings() -> Settings:
         article_reader_proxy_url=article_reader_proxy_url,
         openrouter_web_tools_enabled=openrouter_web_tools_enabled,
         openrouter_daily_call_budget=openrouter_daily_call_budget,
+        telemetry_enabled=telemetry_enabled,
+        alert_error_rate_threshold=alert_error_rate_threshold,
+        alert_min_requests=alert_min_requests,
     )
 
 
@@ -167,6 +179,17 @@ def _read_int(name: str, default: int) -> int:
         return default
     try:
         parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _read_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = float(raw_value)
     except ValueError:
         return default
     return parsed if parsed > 0 else default
